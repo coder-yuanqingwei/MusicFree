@@ -86,3 +86,7 @@ scripts/
 .expo
 dist/
 web-build/
+
+# Local runtime artifacts
+downloads/
+paseo.json
