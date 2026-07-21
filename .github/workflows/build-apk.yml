@@ -56,8 +56,14 @@ jobs:
       - name: Install Dependencies
         run: npm ci --prefer-offline --no-audit
 
+      - name: Check Keystore Secret
+        id: check_keystore
+        env:
+          HAS_KEYSTORE: ${{ secrets.RELEASE_KEYSTORE_BASE64 != '' && 'true' || 'false' }}
+        run: echo "has_keystore=$HAS_KEYSTORE" >> $GITHUB_OUTPUT
+
       - name: Setup Release Keystore
-        if: ${{ inputs.build_type == 'release' && secrets.RELEASE_KEYSTORE_BASE64 != '' }}
+        if: ${{ inputs.build_type == 'release' && steps.check_keystore.outputs.has_keystore == 'true' }}
         run: |
           echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 -d > android/app/release.keystore
           cat > android/keystore.properties << EOF
