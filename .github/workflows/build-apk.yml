@@ -1,0 +1,131 @@
+name: 构建 Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: '构建类型'
+        required: true
+        default: 'debug'
+        type: choice
+        options:
+          - debug
+          - release
+      architectures:
+        description: '目标架构 (universal 会包含所有架构，体积较大)'
+        required: true
+        default: 'arm64-v8a'
+        type: choice
+        options:
+          - arm64-v8a
+          - armeabi-v7a
+          - universal
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'gradle'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            android/.gradle
+          key: ${{ runner.os }}-rn-${{ hashFiles('package-lock.json', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-rn-
+
+      - name: Install Dependencies
+        run: npm ci --prefer-offline --no-audit
+
+      - name: Setup Release Keystore
+        if: ${{ inputs.build_type == 'release' && secrets.RELEASE_KEYSTORE_BASE64 != '' }}
+        run: |
+          echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 -d > android/app/release.keystore
+          cat > android/keystore.properties << EOF
+          RELEASE_STORE_FILE=release.keystore
+          RELEASE_STORE_PASSWORD=${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_ALIAS=${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD=${{ secrets.RELEASE_KEY_PASSWORD }}
+          EOF
+          chmod 600 android/keystore.properties android/app/release.keystore
+
+      - name: Set architecture
+        run: |
+          if [ "${{ inputs.architectures }}" = "universal" ]; then
+            echo "reactNativeArchitectures=armeabi-v7a,arm64-v8a,x86,x86_64" >> $GITHUB_ENV
+          else
+            echo "reactNativeArchitectures=${{ inputs.architectures }}" >> $GITHUB_ENV
+          fi
+
+      - name: Make gradlew executable
+        run: chmod +x android/gradlew
+
+      - name: Build Debug APK
+        if: ${{ inputs.build_type == 'debug' }}
+        run: |
+          cd android
+          ./gradlew assembleDebug \
+            -PreactNativeArchitectures=${{ env.reactNativeArchitectures }} \
+            --parallel --build-cache
+
+      - name: Build Release APK
+        if: ${{ inputs.build_type == 'release' }}
+        run: |
+          cd android
+          ./gradlew assembleRelease \
+            -PreactNativeArchitectures=${{ env.reactNativeArchitectures }} \
+            --parallel --build-cache
+
+      - name: Find APK
+        id: find_apk
+        run: |
+          if [ "${{ inputs.build_type }}" = "debug" ]; then
+            APK_DIR="android/app/build/outputs/apk/debug"
+          else
+            APK_DIR="android/app/build/outputs/apk/release"
+          fi
+          echo "apk_dir=$APK_DIR" >> $GITHUB_OUTPUT
+          echo "📱 生成的 APK 文件:"
+          find "$APK_DIR" -name "*.apk" -exec ls -lh {} \;
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MusicFree-${{ inputs.build_type }}-${{ github.sha }}
+          path: |
+            ${{ steps.find_apk.outputs.apk_dir }}/*-universal-*.apk
+            ${{ steps.find_apk.outputs.apk_dir }}/*-arm64-v8a-*.apk
+            ${{ steps.find_apk.outputs.apk_dir }}/*-armeabi-v7a-*.apk
+            ${{ steps.find_apk.outputs.apk_dir }}/*.apk
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Build Summary
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "## 构建完成" >> $GITHUB_STEP_SUMMARY
+          echo "- 版本: $VERSION" >> $GITHUB_STEP_SUMMARY
+          echo "- 类型: ${{ inputs.build_type }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 架构: ${{ inputs.architectures }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 提交: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "前往 Actions 页面下载 APK 文件" >> $GITHUB_STEP_SUMMARY
